@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.flickfind.data.local.MovieEntity
+import com.example.flickfind.data.local.UserEntity
+import com.example.flickfind.data.local.ReviewEntity
 import com.example.flickfind.data.model.Movie
 import com.example.flickfind.data.repository.MovieRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -14,6 +16,18 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class MovieViewModel(private val repository: MovieRepository) : ViewModel() {
+
+    private val _currentUser = MutableStateFlow<UserEntity?>(null)
+    val currentUser: StateFlow<UserEntity?> = _currentUser.asStateFlow()
+
+    private val _movieReviews = MutableStateFlow<List<ReviewEntity>>(emptyList())
+    val movieReviews: StateFlow<List<ReviewEntity>> = _movieReviews.asStateFlow()
+
+    private val _movieAverageRating = MutableStateFlow<Double?>(null)
+    val movieAverageRating: StateFlow<Double?> = _movieAverageRating.asStateFlow()
+
+    private var reviewsJob: kotlinx.coroutines.Job? = null
+    private var avgRatingJob: kotlinx.coroutines.Job? = null
 
     private val _nowPlayingMovies = MutableStateFlow<List<Movie>>(emptyList())
     val nowPlayingMovies: StateFlow<List<Movie>> = _nowPlayingMovies.asStateFlow()
@@ -117,6 +131,22 @@ class MovieViewModel(private val repository: MovieRepository) : ViewModel() {
         }
     }
 
+    fun fetchReviewsForMovie(movieId: Int) {
+        reviewsJob?.cancel()
+        reviewsJob = viewModelScope.launch {
+            repository.getReviewsForMovie(movieId).collect {
+                _movieReviews.value = it
+            }
+        }
+
+        avgRatingJob?.cancel()
+        avgRatingJob = viewModelScope.launch {
+            repository.getAverageRatingForMovie(movieId).collect {
+                _movieAverageRating.value = it
+            }
+        }
+    }
+
     fun fetchMovieDetails(movieId: Int) {
         viewModelScope.launch {
             _isLoadingDetail.value = true
@@ -130,6 +160,8 @@ class MovieViewModel(private val repository: MovieRepository) : ViewModel() {
                 } else {
                     _selectedMovie.value = movie
                 }
+                // Tải đánh giá & bình luận cho phim
+                fetchReviewsForMovie(movieId)
             } catch (e: Exception) {
                 android.util.Log.e("MovieViewModel", "Error fetching movie details: ${e.message}", e)
                 _errorMessage.value = "Không thể tải chi tiết phim: ${e.message}"
@@ -141,6 +173,48 @@ class MovieViewModel(private val repository: MovieRepository) : ViewModel() {
 
     fun clearSelectedMovie() {
         _selectedMovie.value = null
+        reviewsJob?.cancel()
+        avgRatingJob?.cancel()
+        _movieReviews.value = emptyList()
+        _movieAverageRating.value = null
+    }
+
+    suspend fun register(username: String, passwordHash: String, displayName: String): Boolean {
+        val newUser = UserEntity(username, passwordHash, displayName)
+        val success = repository.registerUser(newUser)
+        if (success) {
+            _currentUser.value = newUser
+        }
+        return success
+    }
+
+    suspend fun login(username: String, passwordHash: String): Boolean {
+        val user = repository.loginUser(username, passwordHash)
+        return if (user != null) {
+            _currentUser.value = user
+            true
+        } else {
+            false
+        }
+    }
+
+    fun logout() {
+        _currentUser.value = null
+    }
+
+    fun submitReview(movieId: Int, rating: Int, comment: String) {
+        val user = _currentUser.value ?: return
+        viewModelScope.launch {
+            val newReview = ReviewEntity(
+                movieId = movieId,
+                username = user.username,
+                displayName = user.displayName,
+                rating = rating,
+                comment = comment,
+                timestamp = System.currentTimeMillis()
+            )
+            repository.addReview(newReview)
+        }
     }
 }
 
